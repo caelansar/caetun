@@ -1,0 +1,13 @@
+[package]
+name = "caetun"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+etherparse = "0.15.0"
+clap = { version = "^4.4.8", features = ["derive"] }
+parking_lot = "0.12.3"
+socket2 = "0.5.7"
+tun-tap = "0.1.4"
