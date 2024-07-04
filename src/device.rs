@@ -3,12 +3,8 @@ use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
 
 use tun_tap::Iface;
 
-use parking_lot::{Mutex, MutexGuard};
+use crate::peer::Peer;
 use socket2::{Domain, Protocol, Socket, Type};
-
-pub struct Peer {
-    endpoint: Mutex<Option<SocketAddrV4>>,
-}
 
 pub struct Device {
     udp: UdpSocket,
@@ -35,9 +31,7 @@ impl Device {
         Self {
             udp,
             iface,
-            peer: Peer {
-                endpoint: Mutex::new(peer),
-            },
+            peer: Peer::new(peer),
         }
     }
 
@@ -103,20 +97,6 @@ impl Device {
                 }
                 self.iface.send(&buf[..nbytes])?;
             }
-        }
-    }
-}
-
-impl Peer {
-    fn endpoint(&self) -> MutexGuard<Option<SocketAddrV4>> {
-        self.endpoint.lock()
-    }
-
-    fn set_endpoint(&self, addr: SocketAddrV4) {
-        let mut endpoint = self.endpoint.lock();
-
-        if endpoint.is_none() {
-            *endpoint = Some(addr);
         }
     }
 }

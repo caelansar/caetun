@@ -5,6 +5,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 mod device;
+mod peer;
+mod poll;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
