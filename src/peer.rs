@@ -21,7 +21,7 @@ impl Peer {
     // updates the peer endpoint address, and returns if it had a different address
     // and a previous connected UdpSocket
     pub fn set_endpoint(&self, addr: SocketAddrV4) -> (bool, Option<Arc<UdpSocket>>) {
-        let mut endpoint = self.endpoint.read();
+        let endpoint = self.endpoint.read();
 
         if let Some(addr) = endpoint.addr {
             return (false, None);

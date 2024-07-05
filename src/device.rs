@@ -130,12 +130,12 @@ impl Device {
         let endpoint = self.peer.endpoint();
 
         match (&endpoint.conn, endpoint.addr) {
-            ((Some(conn), _)) => {
+            (Some(conn), _) => {
                 eprintln!("[handshake] initiating handshake using conn..");
 
                 conn.send(msg)?;
             }
-            ((_, Some(addr))) => {
+            (_, Some(addr)) => {
                 eprintln!("[handshake] initiating handshake using addr..");
 
                 self.udp.send_to(msg, addr)?;
