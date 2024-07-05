@@ -1,25 +1,52 @@
-use parking_lot::{Mutex, MutexGuard};
-use std::net::SocketAddrV4;
+use crate::device::{new_udp_socket, Endpoint};
+use parking_lot::{RwLock, RwLockReadGuard};
+use std::io;
+use std::net::{SocketAddrV4, UdpSocket};
+use std::sync::Arc;
 
 pub struct Peer {
-    endpoint: Mutex<Option<SocketAddrV4>>,
+    endpoint: RwLock<Endpoint>,
 }
 
 impl Peer {
-    pub fn new(peer: Option<SocketAddrV4>) -> Self {
+    pub fn new(peer: Endpoint) -> Self {
         Self {
-            endpoint: Mutex::new(peer),
+            endpoint: RwLock::new(peer),
         }
     }
-    pub fn endpoint(&self) -> MutexGuard<Option<SocketAddrV4>> {
-        self.endpoint.lock()
+    pub fn endpoint(&self) -> RwLockReadGuard<Endpoint> {
+        self.endpoint.read()
     }
 
-    pub fn set_endpoint(&self, addr: SocketAddrV4) {
-        let mut endpoint = self.endpoint.lock();
+    // updates the peer endpoint address, and returns if it had a different address
+    // and a previous connected UdpSocket
+    pub fn set_endpoint(&self, addr: SocketAddrV4) -> (bool, Option<Arc<UdpSocket>>) {
+        let mut endpoint = self.endpoint.read();
 
-        if endpoint.is_none() {
-            *endpoint = Some(addr);
+        if let Some(addr) = endpoint.addr {
+            return (false, None);
         }
+        drop(endpoint);
+
+        let mut endpoint = self.endpoint.write();
+        endpoint.addr = Some(addr);
+
+        (true, endpoint.conn.take())
+    }
+
+    pub fn connect_endpoint(&self, port: u16) -> io::Result<Arc<UdpSocket>> {
+        let mut endpoint = self.endpoint.write();
+        let addr = endpoint.addr.expect("addr must not be None");
+
+        assert!(endpoint.conn.is_none());
+
+        let conn = new_udp_socket(port)?;
+        // connect to peer
+        conn.connect(addr)?;
+
+        let conn = Arc::new(conn);
+        endpoint.conn = Some(conn.clone());
+
+        Ok(conn)
     }
 }

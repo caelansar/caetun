@@ -52,7 +52,7 @@ where
     }
 }
 
-// edge-triggered mode, as opposed to the default level-triggered mode. This choice significantly
+// Using edge-triggered mode, as opposed to the default level-triggered mode. This choice significantly
 // impacts how epoll behaves in a multithreaded environment:
 //
 // - Edge vs. Level Triggered: In level-triggered mode, epoll will continually notify about an event
@@ -108,6 +108,36 @@ impl Poll {
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "unexpected epoll data"))?;
 
         Ok(token)
+    }
+}
+
+// UDP sockets can be "connected" (or "established") or "unconnected".
+// Connected sockets have a full 4-tuple associated {source ip, source port, destination ip, destination port},
+// unconnected sockets have 2-tuple {bind ip, bind port}.
+//
+// https://blog.cloudflare.com/everything-you-ever-wanted-to-know-about-udp-sockets-but-were-afraid-to-ask-part-1
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum SockID {
+    UnConnected,
+    Connected,
+}
+
+impl From<i32> for SockID {
+    fn from(value: i32) -> Self {
+        if value == -1 {
+            SockID::UnConnected
+        } else {
+            SockID::Connected
+        }
+    }
+}
+
+impl From<SockID> for i32 {
+    fn from(value: SockID) -> Self {
+        match value {
+            SockID::UnConnected => -1,
+            SockID::Connected => 0,
+        }
     }
 }
 
