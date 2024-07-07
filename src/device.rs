@@ -254,6 +254,7 @@ impl Device {
     }
 
     #[deprecated]
+    #[allow(unused)]
     pub fn loop_listen_iface(&self) -> io::Result<()> {
         // handshake
         {
@@ -291,6 +292,7 @@ impl Device {
     }
 
     #[deprecated]
+    #[allow(unused)]
     pub fn loop_listen_udp(&self) -> io::Result<()> {
         let mut buf = [0u8; 1504];
 

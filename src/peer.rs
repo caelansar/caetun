@@ -23,7 +23,7 @@ impl Peer {
     pub fn set_endpoint(&self, addr: SocketAddrV4) -> (bool, Option<Arc<UdpSocket>>) {
         let endpoint = self.endpoint.read();
 
-        if let Some(addr) = endpoint.addr {
+        if endpoint.addr.is_some_and(|a| a == addr) {
             return (false, None);
         }
         drop(endpoint);
