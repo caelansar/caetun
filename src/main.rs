@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 mod device;
 mod peer;
 mod poll;
+mod conf;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
