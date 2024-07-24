@@ -19,7 +19,7 @@ pub struct Device {
     listen_port: u16,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Endpoint {
     pub addr: Option<SocketAddrV4>,
     pub conn: Option<Arc<UdpSocket>>,
@@ -183,17 +183,24 @@ impl Device {
     // Handle incoming data from an unconnected UdpSocket
     pub fn handle_udp(&self, buf: &mut [u8]) -> io::Result<()> {
         while let Ok((n, addr)) = self.udp.recv_from(buf) {
-            eprintln!("got packet of size: {n}, from {addr}");
+            eprintln!("[handle_udp] got packet of size: {n}, from {addr}");
 
             match etherparse::Ipv4HeaderSlice::from_slice(&buf[..n]) {
                 Ok(iph) => {
                     let src = iph.source_addr();
                     let dst = iph.destination_addr();
-                    eprintln!("{src} -> {dst}");
+                    eprintln!("[handle_udp] {src} -> {dst}");
                 }
                 Err(e) => {
-                    eprintln!("not an Ipv4 packet: {:?}", e);
-                    continue;
+                    // ignore handshake packets
+                    if &buf[..n] != HANDSHAKE.as_bytes() {
+                        eprintln!(
+                            "[handle_udp] not an Ipv4 packet: {:?}, err: {:?}",
+                            &buf[..n],
+                            e
+                        );
+                        continue;
+                    }
                 }
             }
 
@@ -224,7 +231,8 @@ impl Device {
                     }
                     continue;
                 }
-                let _ = self.iface.send(&buf[..n]);
+                let n = self.iface.send(&buf[..n])?;
+                println!("[handle_udp] send {n} bytes");
             }
         }
 
@@ -241,14 +249,19 @@ impl Device {
                 Ok(iph) => {
                     let src = iph.source_addr();
                     let dst = iph.destination_addr();
-                    eprintln!("  {src} -> {dst}");
+                    eprintln!("[handle_connected_peer] {src} -> {dst}");
                 }
-                _ => {
-                    eprintln!("not an Ipv4 packet: {:?}", &buf[..n]);
+                Err(e) => {
+                    eprintln!(
+                        "[handle_connected_peer] not an Ipv4 packet: {:?}, err: {:?}",
+                        &buf[..n],
+                        e
+                    );
                 }
             }
 
-            let _ = self.iface.send(&buf[..n]);
+            let n = self.iface.send(&buf[..n])?;
+            println!("[handle_udp] send {n} bytes");
         }
         Ok(())
     }

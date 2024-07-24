@@ -3,11 +3,11 @@ use clap::Parser;
 use std::io;
 use std::net::SocketAddr;
 
+mod allowed_ip;
+mod conf;
 mod device;
 mod peer;
 mod poll;
-mod conf;
-mod allowed_ip;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
