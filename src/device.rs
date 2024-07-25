@@ -7,6 +7,7 @@ use tun_tap::Iface;
 use crate::peer::Peer;
 use crate::poll::{Poll, SockID, Token};
 use socket2::{Domain, Protocol, Socket, Type};
+use tracing::{debug, error, info, warn};
 
 const HANDSHAKE: &str = "hello?";
 
@@ -89,22 +90,22 @@ impl Device {
         while let Ok(token) = self.poll.wait() {
             match token {
                 Token::Tun => {
-                    eprintln!("handle Token::Tun");
+                    debug!("handle Token::Tun");
                     if let Err(err) = self.handle_tun(&mut buf) {
-                        eprintln!("tun error: {:?}", err);
+                        error!("tun error: {:?}", err);
                     }
                 }
                 Token::Sock(SockID::UnConnected) => {
-                    eprintln!("handle Token::Sock(SockID::BindOnly)");
+                    debug!("handle Token::Sock(SockID::BindOnly)");
                     if let Err(err) = self.handle_udp(&mut buf) {
-                        eprintln!("udp error: {:?}", err);
+                        error!("udp error: {:?}", err);
                     }
                 }
                 Token::Sock(SockID::Connected) => {
-                    eprintln!("handle Token::Sock(SockID::ConnectedPeer)");
+                    debug!("handle Token::Sock(SockID::ConnectedPeer)");
                     if let Some(conn) = self.peer.endpoint().conn.as_deref() {
                         if let Err(err) = self.handle_connected_peer(conn, &mut buf) {
-                            eprintln!("udp error: {:?}", err);
+                            error!("udp error: {:?}", err);
                         }
                     }
                 }
@@ -113,7 +114,7 @@ impl Device {
     }
 
     pub fn start(&self) -> io::Result<()> {
-        eprintln!("start caetun");
+        info!("start caetun");
 
         let tun = unsafe { BorrowedFd::borrow_raw(self.iface.as_raw_fd()) };
 
@@ -131,17 +132,17 @@ impl Device {
 
         match (&endpoint.conn, endpoint.addr) {
             (Some(conn), _) => {
-                eprintln!("[handshake] initiating handshake using conn..");
+                debug!("[handshake] initiating handshake using conn..");
 
                 conn.send(msg)?;
             }
             (_, Some(addr)) => {
-                eprintln!("[handshake] initiating handshake using addr..");
+                debug!("[handshake] initiating handshake using addr..");
 
                 self.udp.send_to(msg, addr)?;
             }
             _ => {
-                eprintln!("[handshake] both conn and addr is absent");
+                warn!("[handshake] both conn and addr is absent");
             }
         }
 
@@ -155,13 +156,13 @@ impl Device {
                 Ok(h) => {
                     let src = h.source_addr();
                     let dst = h.destination_addr();
-                    eprintln!(
+                    info!(
                         "got Ipv4 packet of size: {n}, {src} -> {dst}, from {}",
                         self.iface.name()
                     );
                 }
                 Err(e) => {
-                    eprintln!("not an Ipv4 packet: {:?}", e);
+                    error!("not an Ipv4 packet: {:?}", e);
                     continue;
                 }
             }
@@ -174,7 +175,7 @@ impl Device {
                 (_, Some(addr)) => self.udp.send_to(&buf[..n], addr)?,
                 _ => 0,
             };
-            eprintln!("[handle_tun] send {send_bytes} bytes")
+            debug!("[handle_tun] send {send_bytes} bytes")
         }
 
         Ok(())
@@ -183,18 +184,18 @@ impl Device {
     // Handle incoming data from an unconnected UdpSocket
     pub fn handle_udp(&self, buf: &mut [u8]) -> io::Result<()> {
         while let Ok((n, addr)) = self.udp.recv_from(buf) {
-            eprintln!("[handle_udp] got packet of size: {n}, from {addr}");
+            info!("[handle_udp] got packet of size: {n}, from {addr}");
 
             match etherparse::Ipv4HeaderSlice::from_slice(&buf[..n]) {
                 Ok(iph) => {
                     let src = iph.source_addr();
                     let dst = iph.destination_addr();
-                    eprintln!("[handle_udp] {src} -> {dst}");
+                    debug!("[handle_udp] {src} -> {dst}");
                 }
                 Err(e) => {
                     // ignore handshake packets
                     if &buf[..n] != HANDSHAKE.as_bytes() {
-                        eprintln!(
+                        error!(
                             "[handle_udp] not an Ipv4 packet: {:?}, err: {:?}",
                             &buf[..n],
                             e
@@ -207,7 +208,7 @@ impl Device {
             if let SocketAddr::V4(addr_v4) = addr {
                 // handle our handshake packet
                 if &buf[..n] == HANDSHAKE.as_bytes() {
-                    eprintln!("received handshake..");
+                    info!("received handshake..");
 
                     let (endpoint_changed, conn) = self.peer.set_endpoint(addr_v4);
                     if let Some(conn) = conn {
@@ -225,14 +226,14 @@ impl Device {
                                     .expect("poll register_read");
                             }
                             Err(err) => {
-                                eprintln!("error connecting to peer: {:?}", err);
+                                error!("error connecting to peer: {:?}", err);
                             }
                         }
                     }
                     continue;
                 }
                 let n = self.iface.send(&buf[..n])?;
-                println!("[handle_udp] send {n} bytes");
+                debug!("[handle_udp] send {n} bytes");
             }
         }
 
@@ -243,16 +244,16 @@ impl Device {
     pub fn handle_connected_peer(&self, socket: &UdpSocket, buf: &mut [u8]) -> io::Result<()> {
         // since this socket is "connected", so we can recv from it directly
         while let Ok(n) = socket.recv(&mut buf[..]) {
-            eprintln!("got packet of size: {n}, from a connected peer");
+            info!("got packet of size: {n}, from a connected peer");
 
             match etherparse::Ipv4HeaderSlice::from_slice(&buf[..n]) {
                 Ok(iph) => {
                     let src = iph.source_addr();
                     let dst = iph.destination_addr();
-                    eprintln!("[handle_connected_peer] {src} -> {dst}");
+                    debug!("[handle_connected_peer] {src} -> {dst}");
                 }
                 Err(e) => {
-                    eprintln!(
+                    error!(
                         "[handle_connected_peer] not an Ipv4 packet: {:?}, err: {:?}",
                         &buf[..n],
                         e
@@ -261,7 +262,7 @@ impl Device {
             }
 
             let n = self.iface.send(&buf[..n])?;
-            println!("[handle_udp] send {n} bytes");
+            debug!("[handle_udp] send {n} bytes");
         }
         Ok(())
     }
@@ -274,7 +275,7 @@ impl Device {
             let peer = self.peer.endpoint();
 
             if let Some(peer_addr) = peer.addr.as_ref() {
-                eprintln!("initiating \"handshake\" to peer: {peer_addr}");
+                info!("initiating \"handshake\" to peer: {peer_addr}");
 
                 self.udp.send_to("hello?".as_bytes(), peer_addr)?;
             }
@@ -289,17 +290,17 @@ impl Device {
                 Ok(iph) => {
                     let src = iph.source_addr();
                     let dst = iph.destination_addr();
-                    eprintln!("got Ipv4 packet of size: {nbytes}, {src} -> {dst}, from tun0");
+                    info!("got Ipv4 packet of size: {nbytes}, {src} -> {dst}, from tun0");
                 }
                 Err(e) => {
-                    eprintln!("failed to parse packet header: {:?}", e)
+                    error!("failed to parse packet header: {:?}", e)
                 }
             }
             let peer = self.peer.endpoint();
             if let Some(peer_addr) = peer.addr.as_ref() {
                 self.udp.send_to(&buf[..nbytes], peer_addr)?;
             } else {
-                eprintln!("..no peer");
+                debug!("..no peer");
             }
         }
     }
@@ -311,22 +312,22 @@ impl Device {
 
         loop {
             let (nbytes, peer_addr) = self.udp.recv_from(&mut buf[..])?;
-            eprintln!("got packet of size: {nbytes}, from {peer_addr}");
+            info!("got packet of size: {nbytes}, from {peer_addr}");
 
             match etherparse::Ipv4HeaderSlice::from_slice(&buf[..nbytes]) {
                 Ok(iph) => {
                     let src = iph.source_addr();
                     let dst = iph.destination_addr();
-                    eprintln!("  {src} -> {dst}");
+                    debug!("  {src} -> {dst}");
                 }
                 _ => {
-                    eprintln!("not an Ipv4 packet");
+                    error!("not an Ipv4 packet");
                 }
             }
 
             if let SocketAddr::V4(peer_addr_v4) = peer_addr {
                 if &buf[..nbytes] == b"hello?" {
-                    eprintln!("received handshake");
+                    info!("received handshake");
                     self.peer.set_endpoint(peer_addr_v4);
                     continue;
                 }

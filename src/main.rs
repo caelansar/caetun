@@ -2,6 +2,8 @@ use crate::device::{Device, DeviceConfig};
 use clap::Parser;
 use std::io;
 use std::net::SocketAddr;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::{fmt::Layer, layer::SubscriberExt, util::SubscriberInitExt, Layer as _};
 
 mod allowed_ip;
 mod conf;
@@ -37,6 +39,11 @@ fn run(peer_addr: Option<&str>) -> io::Result<()> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let layer = Layer::new()
+        .event_format(tracing_subscriber::fmt::format().with_source_location(true))
+        .with_filter(LevelFilter::DEBUG);
+    tracing_subscriber::registry().with(layer).init();
+
     println!(
         r#"
                       __

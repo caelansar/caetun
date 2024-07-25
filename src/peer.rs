@@ -3,6 +3,7 @@ use parking_lot::{RwLock, RwLockReadGuard};
 use std::io;
 use std::net::{SocketAddrV4, UdpSocket};
 use std::sync::Arc;
+use tracing::info;
 
 #[derive(Debug)]
 pub struct Peer {
@@ -36,7 +37,7 @@ impl Peer {
     }
 
     pub fn connect_endpoint(&self, port: u16) -> io::Result<Arc<UdpSocket>> {
-        println!("[peer] connect endpoint, peer: {:?}", self);
+        info!("[peer] connect endpoint, peer: {:?}", self);
 
         let mut endpoint = self.endpoint.write();
         let addr = endpoint.addr.expect("addr must not be None");
