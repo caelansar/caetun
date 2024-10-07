@@ -8,6 +8,7 @@ use tracing_subscriber::{fmt::Layer, layer::SubscriberExt, util::SubscriberInitE
 mod allowed_ip;
 mod conf;
 mod device;
+mod packet;
 mod peer;
 mod poll;
 

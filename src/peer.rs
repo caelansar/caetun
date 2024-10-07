@@ -10,6 +10,46 @@ pub struct Peer {
     endpoint: RwLock<Endpoint>,
 }
 
+#[derive(Debug, PartialEq)]
+pub struct PeerName<T>(T);
+
+impl<'a> From<&'a [u8]> for PeerName<&'a [u8]> {
+    fn from(slice: &'a [u8]) -> Self {
+        PeerName(slice)
+    }
+}
+
+impl<'a> PeerName<&'a [u8]> {
+    pub fn as_slice(&self) -> &'a [u8] {
+        self.0
+    }
+}
+
+const PEER_NAME_MAX_LEN: usize = 100;
+
+impl PeerName<[u8; PEER_NAME_MAX_LEN]> {
+    pub const fn max_len() -> usize {
+        PEER_NAME_MAX_LEN
+    }
+
+    pub fn new(name: &str) -> Result<Self, String> {
+        let mut bytes = [0u8; PEER_NAME_MAX_LEN];
+        let name_bytes = name.as_bytes();
+        let len = name_bytes.len();
+
+        if len > PEER_NAME_MAX_LEN {
+            Err(format!("`{name}` too long"))
+        } else {
+            bytes[..len].copy_from_slice(name_bytes);
+            Ok(PeerName(bytes))
+        }
+    }
+
+    pub fn as_ref(&self) -> PeerName<&[u8]> {
+        PeerName(self.0.as_slice())
+    }
+}
+
 impl Peer {
     pub fn new(peer: Endpoint) -> Self {
         Self {
