@@ -36,7 +36,6 @@ const DATA_MIN_SIZE: usize = 5;
 
 #[derive(Debug, Copy, Clone)]
 pub enum PackeParseError {
-    InvalidPeerName,
     ProtocolErr,
 }
 

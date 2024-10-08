@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::fmt::{Debug, Formatter};
 use std::net::IpAddr;
 
 use ip_network::IpNetwork;

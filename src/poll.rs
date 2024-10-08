@@ -118,16 +118,16 @@ impl Poll {
 // https://blog.cloudflare.com/everything-you-ever-wanted-to-know-about-udp-sockets-but-were-afraid-to-ask-part-1
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum SockID {
-    UnConnected,
-    Connected,
+    Unconnected,
+    Connected(u32),
 }
 
 impl From<i32> for SockID {
     fn from(value: i32) -> Self {
         if value == -1 {
-            SockID::UnConnected
+            SockID::Unconnected
         } else {
-            SockID::Connected
+            SockID::Connected(value as u32)
         }
     }
 }
@@ -135,8 +135,8 @@ impl From<i32> for SockID {
 impl From<SockID> for i32 {
     fn from(value: SockID) -> Self {
         match value {
-            SockID::UnConnected => -1,
-            SockID::Connected => 0,
+            SockID::Unconnected => -1,
+            SockID::Connected(i) => i as i32,
         }
     }
 }

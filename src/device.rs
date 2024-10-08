@@ -1,20 +1,26 @@
+use std::collections::HashMap;
 use std::io;
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::sync::Arc;
 use tun_tap::Iface;
 
-use crate::peer::Peer;
+use crate::allowed_ip::AllowedIps;
+use crate::packet::{Packet, PacketData};
+use crate::peer::{Action, Peer, PeerName};
 use crate::poll::{Poll, SockID, Token};
 use socket2::{Domain, Protocol, Socket, Type};
 use tracing::{debug, error, info, warn};
 
-const HANDSHAKE: &str = "hello?";
+const BUF_SIZE: usize = 1504;
 
 pub struct Device {
+    name: PeerName,
     udp: Arc<UdpSocket>,
     iface: Iface,
-    peer: Peer,
+    peers_by_name: HashMap<PeerName, Arc<Peer>>,
+    peers_by_idx: Vec<Arc<Peer>>,
+    peers_by_ip: AllowedIps<Arc<Peer>>,
     poll: Poll,
     use_connected_peer: bool,
     listen_port: u16,
@@ -27,17 +33,24 @@ pub struct Endpoint {
 }
 
 pub struct DeviceConfig<'a> {
+    name: PeerName,
+    use_connected_peer: bool,
     listen_port: u16,
     tun_name: &'a str,
-    peer_addr: Option<SocketAddrV4>,
 }
 
 impl<'a> DeviceConfig<'a> {
-    pub fn new(tun_name: &'a str, listen_port: u16, peer_addr: Option<SocketAddrV4>) -> Self {
+    pub fn new(
+        name: PeerName,
+        tun_name: &'a str,
+        listen_port: u16,
+        use_connected_peer: bool,
+    ) -> Self {
         Self {
+            name,
             tun_name,
             listen_port,
-            peer_addr,
+            use_connected_peer,
         }
     }
 }
@@ -61,26 +74,39 @@ impl Device {
         iface.set_non_blocking()?;
 
         let poll = Poll::new()?;
-        let peer = Peer::new(Endpoint::default());
-        let udp = if let Some(addr) = config.peer_addr {
-            peer.set_endpoint(addr);
-            peer.connect_endpoint(config.listen_port)?
-        } else {
-            Arc::new(new_udp_socket(config.listen_port)?)
-        };
+
+        let udp = Arc::new(new_udp_socket(config.listen_port)?);
 
         Ok(Self {
+            name: config.name,
             udp,
             iface,
-            peer,
+            peers_by_name: HashMap::new(),
+            peers_by_idx: Vec::new(),
+            peers_by_ip: AllowedIps::new(),
             poll,
-            use_connected_peer: config.peer_addr.is_some(),
+            use_connected_peer: config.use_connected_peer,
             listen_port: config.listen_port,
         })
     }
 
+    pub fn add_peer(&mut self, name: PeerName, mut peer: Peer) {
+        let local_idx = self.peers_by_idx.len();
+        peer.set_local_idx(local_idx as u32);
+
+        let peer = Arc::new(peer);
+
+        self.peers_by_name.insert(name, Arc::clone(&peer));
+        self.peers_by_ip.extend(
+            peer.allowed_ips()
+                .iter()
+                .map(|(_, ip, cidr)| (ip, cidr, Arc::clone(&peer))),
+        );
+        self.peers_by_idx.push(peer);
+    }
+
     pub fn wait(&self) {
-        let mut buf = [0u8; 1504];
+        let mut buf = [0u8; BUF_SIZE];
 
         // there will be three IO resources in this loop
         //
@@ -95,16 +121,19 @@ impl Device {
                         error!("tun error: {:?}", err);
                     }
                 }
-                Token::Sock(SockID::UnConnected) => {
+                Token::Sock(SockID::Unconnected) => {
                     debug!("handle Token::Sock(SockID::BindOnly)");
                     if let Err(err) = self.handle_udp(&mut buf) {
                         error!("udp error: {:?}", err);
                     }
                 }
-                Token::Sock(SockID::Connected) => {
+                Token::Sock(SockID::Connected(i)) => {
                     debug!("handle Token::Sock(SockID::ConnectedPeer)");
-                    if let Some(conn) = self.peer.endpoint().conn.as_deref() {
-                        if let Err(err) = self.handle_connected_peer(conn, &mut buf) {
+                    let Some(peer) = self.peers_by_idx.get(i as usize) else {
+                        continue;
+                    };
+                    if let Some(conn) = peer.endpoint().conn.as_deref() {
+                        if let Err(err) = self.handle_connected_peer(conn, peer, &mut buf) {
                             error!("udp error: {:?}", err);
                         }
                     }
@@ -119,31 +148,12 @@ impl Device {
         let tun = unsafe { BorrowedFd::borrow_raw(self.iface.as_raw_fd()) };
 
         self.poll
-            .register_read(Token::Sock(SockID::UnConnected), self.udp.as_ref())?;
+            .register_read(Token::Sock(SockID::Unconnected), self.udp.as_ref())?;
         self.poll.register_read::<_, SockID>(Token::Tun, &tun)?;
 
-        self.initiate_handshake()
-    }
-
-    fn initiate_handshake(&self) -> io::Result<()> {
-        let msg = HANDSHAKE.as_bytes();
-
-        let endpoint = self.peer.endpoint();
-
-        match (&endpoint.conn, endpoint.addr) {
-            (Some(conn), _) => {
-                debug!("[handshake] initiating handshake using conn..");
-
-                conn.send(msg)?;
-            }
-            (_, Some(addr)) => {
-                debug!("[handshake] initiating handshake using addr..");
-
-                self.udp.send_to(msg, addr)?;
-            }
-            _ => {
-                warn!("[handshake] both conn and addr is absent");
-            }
+        let mut buf = [0u8; BUF_SIZE];
+        for (_, peer) in self.peers_by_name.iter() {
+            self.take_action(peer, peer.initiate_handshake(self.name.as_ref(), &mut buf))
         }
 
         Ok(())
@@ -152,7 +162,7 @@ impl Device {
     // Handle incoming data from tun interface
     pub fn handle_tun(&self, buf: &mut [u8]) -> io::Result<()> {
         while let Ok(n) = self.iface.recv(buf) {
-            match etherparse::Ipv4HeaderSlice::from_slice(&buf[..n]) {
+            let (_, dst) = match etherparse::Ipv4HeaderSlice::from_slice(&buf[..n]) {
                 Ok(h) => {
                     let src = h.source_addr();
                     let dst = h.destination_addr();
@@ -160,13 +170,22 @@ impl Device {
                         "got Ipv4 packet of size: {n}, {src} -> {dst}, from {}",
                         self.iface.name()
                     );
+                    (src, dst)
                 }
                 Err(e) => {
                     error!("not an Ipv4 packet: {:?}", e);
                     continue;
                 }
-            }
-            let endpoint = self.peer.endpoint();
+            };
+
+            // peer selection for outgoing packets: determines which peer an outgoing IP packet
+            // should be routed to based on its destination address.
+            let Some(peer) = self.peers_by_ip.find(dst.into()) else {
+                debug!("no peer for this ip: {dst}");
+                continue;
+            };
+
+            let endpoint = peer.endpoint();
 
             // if peer is "connected", we prefer to send data over the connected UdpSocket.
             // otherwise, we will use the main listening socket self.udp and a send_to call.
@@ -186,54 +205,52 @@ impl Device {
         while let Ok((n, addr)) = self.udp.recv_from(buf) {
             info!("[handle_udp] got packet of size: {n}, from {addr}");
 
-            match etherparse::Ipv4HeaderSlice::from_slice(&buf[..n]) {
-                Ok(iph) => {
-                    let src = iph.source_addr();
-                    let dst = iph.destination_addr();
-                    debug!("[handle_udp] {src} -> {dst}");
-                }
-                Err(e) => {
-                    // ignore handshake packets
-                    if &buf[..n] != HANDSHAKE.as_bytes() {
-                        error!(
-                            "[handle_udp] not an Ipv4 packet: {:?}, err: {:?}",
-                            &buf[..n],
-                            e
-                        );
-                        continue;
-                    }
-                }
-            }
+            let SocketAddr::V4(addr) = addr else { continue };
+            let Ok(packet) = Packet::parse_from(&buf[..n]) else {
+                continue;
+            };
 
-            if let SocketAddr::V4(addr_v4) = addr {
+            let peer = match packet {
+                Packet::Empty => continue,
+                Packet::HandshakeInit(ref msg) => {
+                    self.peers_by_name.get(msg.sender_name.as_slice())
+                }
+                Packet::HandshakeResponse(ref msg) => {
+                    self.peers_by_idx.get(msg.sender_idx as usize)
+                }
+                Packet::Data(ref msg) => self.peers_by_idx.get(msg.sender_idx as usize),
+            };
+
+            if let Some(peer) = peer {
                 // handle our handshake packet
-                if &buf[..n] == HANDSHAKE.as_bytes() {
-                    info!("received handshake..");
 
-                    let (endpoint_changed, conn) = self.peer.set_endpoint(addr_v4);
-                    if let Some(conn) = conn {
-                        self.poll.delete(conn.as_ref()).expect("poll delete");
-                        drop(conn);
-                    }
+                let (endpoint_changed, conn) = peer.set_endpoint(addr);
+                if let Some(conn) = conn {
+                    self.poll.delete(conn.as_ref()).expect("poll delete");
+                    // drop(conn);
+                }
 
-                    if endpoint_changed && self.use_connected_peer {
-                        // once a client peer handshakes to the server, we shall open a new UdpSocket
-                        // and connect it to the client’s public ip address and port.
-                        match self.peer.connect_endpoint(self.listen_port) {
-                            Ok(conn) => {
-                                self.poll
-                                    .register_read(Token::Sock(SockID::Connected), &*conn)
-                                    .expect("poll register_read");
-                            }
-                            Err(err) => {
-                                error!("error connecting to peer: {:?}", err);
-                            }
+                if endpoint_changed && self.use_connected_peer {
+                    // once a client peer handshakes to the server, we shall open a new UdpSocket
+                    // and connect it to the client’s public ip address and port.
+                    match peer.connect_endpoint(self.listen_port) {
+                        Ok(conn) => {
+                            self.poll
+                                .register_read(
+                                    Token::Sock(SockID::Connected(peer.local_idx())),
+                                    &*conn,
+                                )
+                                .expect("poll register_read");
+                        }
+                        Err(err) => {
+                            error!("error connecting to peer: {:?}", err);
                         }
                     }
-                    continue;
                 }
-                let n = self.iface.send(&buf[..n])?;
-                debug!("[handle_udp] send {n} bytes");
+
+                let mut buf = [0u8; BUF_SIZE];
+                let action = peer.handle_incoming_packet(packet, &mut buf);
+                self.take_action(peer, action)
             }
         }
 
@@ -241,98 +258,51 @@ impl Device {
     }
 
     // Handle incoming data from a connected UdpSocket
-    pub fn handle_connected_peer(&self, socket: &UdpSocket, buf: &mut [u8]) -> io::Result<()> {
+    pub fn handle_connected_peer(
+        &self,
+        socket: &UdpSocket,
+        peer: &Peer,
+        buf: &mut [u8],
+    ) -> io::Result<()> {
         // since this socket is "connected", so we can recv from it directly
         while let Ok(n) = socket.recv(&mut buf[..]) {
             info!("got packet of size: {n}, from a connected peer");
 
-            match etherparse::Ipv4HeaderSlice::from_slice(&buf[..n]) {
-                Ok(iph) => {
-                    let src = iph.source_addr();
-                    let dst = iph.destination_addr();
-                    debug!("[handle_connected_peer] {src} -> {dst}");
-                }
-                Err(e) => {
-                    error!(
-                        "[handle_connected_peer] not an Ipv4 packet: {:?}, err: {:?}",
-                        &buf[..n],
-                        e
-                    );
-                }
-            }
+            let Ok(packet) = Packet::parse_from(&buf[..n]) else {
+                continue;
+            };
 
-            let n = self.iface.send(&buf[..n])?;
-            debug!("[handle_udp] send {n} bytes");
+            let mut buf = [0u8; BUF_SIZE];
+            let action = peer.handle_incoming_packet(packet, &mut buf);
+            self.take_action(peer, action);
         }
         Ok(())
     }
 
-    #[deprecated]
-    #[allow(unused)]
-    pub fn loop_listen_iface(&self) -> io::Result<()> {
-        // handshake
-        {
-            let peer = self.peer.endpoint();
-
-            if let Some(peer_addr) = peer.addr.as_ref() {
-                info!("initiating \"handshake\" to peer: {peer_addr}");
-
-                self.udp.send_to("hello?".as_bytes(), peer_addr)?;
-            }
-        }
-
-        // a large enough buffer, the MTU on iface was to be set to 1472
-        let mut buf = [0u8; 1504];
-
-        loop {
-            let nbytes = self.iface.recv(&mut buf[..])?;
-            match etherparse::Ipv4HeaderSlice::from_slice(&buf[..nbytes]) {
-                Ok(iph) => {
-                    let src = iph.source_addr();
-                    let dst = iph.destination_addr();
-                    info!("got Ipv4 packet of size: {nbytes}, {src} -> {dst}, from tun0");
-                }
-                Err(e) => {
-                    error!("failed to parse packet header: {:?}", e)
+    fn take_action(&self, peer: &Peer, action: Action<'_>) {
+        match action {
+            Action::WriteToTun(data, src_addr) => {
+                // source address filtering for incoming packets: ensures that incoming packets
+                // are from an allowed source before forwarding them to the tun interface.
+                if peer.is_allowed_ip(src_addr) {
+                    // send packet back to network stack
+                    let n = self.iface.send(data);
+                    info!("write to tun {:?} bytes", n);
                 }
             }
-            let peer = self.peer.endpoint();
-            if let Some(peer_addr) = peer.addr.as_ref() {
-                self.udp.send_to(&buf[..nbytes], peer_addr)?;
-            } else {
-                debug!("..no peer");
+            Action::WriteToNetwork(data) => {
+                let _ = self.send_over_udp(peer, data);
             }
+            Action::None => (),
         }
     }
 
-    #[deprecated]
-    #[allow(unused)]
-    pub fn loop_listen_udp(&self) -> io::Result<()> {
-        let mut buf = [0u8; 1504];
-
-        loop {
-            let (nbytes, peer_addr) = self.udp.recv_from(&mut buf[..])?;
-            info!("got packet of size: {nbytes}, from {peer_addr}");
-
-            match etherparse::Ipv4HeaderSlice::from_slice(&buf[..nbytes]) {
-                Ok(iph) => {
-                    let src = iph.source_addr();
-                    let dst = iph.destination_addr();
-                    debug!("  {src} -> {dst}");
-                }
-                _ => {
-                    error!("not an Ipv4 packet");
-                }
-            }
-
-            if let SocketAddr::V4(peer_addr_v4) = peer_addr {
-                if &buf[..nbytes] == b"hello?" {
-                    info!("received handshake");
-                    self.peer.set_endpoint(peer_addr_v4);
-                    continue;
-                }
-                self.iface.send(&buf[..nbytes])?;
-            }
+    fn send_over_udp(&self, peer: &Peer, data: &[u8]) -> io::Result<usize> {
+        let endpoint = peer.endpoint();
+        match (endpoint.conn.clone(), endpoint.addr) {
+            (Some(conn), _) => conn.send(data),
+            (_, Some(ref addr)) => self.udp.send_to(data, addr),
+            _ => Ok(0),
         }
     }
 }

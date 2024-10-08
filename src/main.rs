@@ -1,8 +1,12 @@
+use crate::conf::Conf;
 use crate::device::{Device, DeviceConfig};
+use crate::peer::{Peer, PeerName};
+use anyhow::{bail, Context};
 use clap::Parser;
-use std::io;
-use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::fs;
 use tracing::level_filters::LevelFilter;
+use tracing::Level;
 use tracing_subscriber::{fmt::Layer, layer::SubscriberExt, util::SubscriberInitExt, Layer as _};
 
 mod allowed_ip;
@@ -14,24 +18,32 @@ mod poll;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
-
 struct Cli {
     #[arg(long)]
-    peer: Option<String>,
+    conf: PathBuf,
+    #[arg(long)]
+    log_level: Option<Level>,
 }
 
-fn run(peer_addr: Option<&str>) -> io::Result<()> {
-    let peer = peer_addr
-        .and_then(|addr| addr.parse::<SocketAddr>().ok())
-        .and_then(|addr| {
-            if let SocketAddr::V4(addr) = addr {
-                Some(addr)
-            } else {
-                None
-            }
-        });
+fn run(tun_name: &str, conf: Conf) -> anyhow::Result<()> {
+    let mut dev = Device::new(DeviceConfig::new(
+        PeerName::new(&conf.interface.name)?,
+        tun_name,
+        conf.interface.listen_port,
+        true,
+    ))?;
 
-    let dev = Device::new(DeviceConfig::new("tun0", 19988, peer))?;
+    for peer_conf in &conf.peers {
+        let peer_name = PeerName::new(&peer_conf.name)?;
+        let mut peer = Peer::default();
+        if let Some(endpoint) = peer_conf.endpoint {
+            peer.set_endpoint(endpoint);
+        }
+        for (ip, cidr) in &peer_conf.allowed_ips {
+            peer.add_allowed_ip(ip.clone(), *cidr);
+        }
+        dev.add_peer(peer_name, peer);
+    }
 
     dev.start()?;
     dev.wait();
@@ -39,7 +51,7 @@ fn run(peer_addr: Option<&str>) -> io::Result<()> {
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
     let layer = Layer::new()
         .event_format(tracing_subscriber::fmt::format().with_source_location(true))
         .with_filter(LevelFilter::DEBUG);
@@ -58,7 +70,13 @@ _/ ___\\__  \ _/ __ \   __\  |  \/    \
 
     let args = Cli::parse();
 
-    run(args.peer.as_deref())?;
+    let Some(tun) = args.conf.file_stem().and_then(|s| s.to_str()) else {
+        bail!("invalid filename")
+    };
+    let conf = fs::read_to_string(&args.conf).context("failed to read config")?;
+    let conf = Conf::parse_from(&conf)?;
+
+    run(tun, conf)?;
 
     Ok(())
 }
