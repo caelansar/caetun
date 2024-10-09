@@ -40,7 +40,7 @@ fn run(tun_name: &str, conf: Conf) -> anyhow::Result<()> {
             peer.set_endpoint(endpoint);
         }
         for (ip, cidr) in &peer_conf.allowed_ips {
-            peer.add_allowed_ip(ip.clone(), *cidr);
+            peer.add_allowed_ip(*ip, *cidr);
         }
         dev.add_peer(peer_name, peer);
     }

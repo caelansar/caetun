@@ -182,7 +182,7 @@ impl Device {
             // peer selection for outgoing packets: determines which peer an outgoing IP packet
             // should be routed to based on its destination address.
             let Some(peer) = self.peers_by_ip.find(dst.into()) else {
-                debug!("no peer for this ip: {dst}");
+                warn!("no peer for this ip: {dst}");
                 continue;
             };
 
@@ -298,11 +298,13 @@ impl Device {
         }
     }
 
+    /// send data over udp
+    ///
+    /// if peer is "connected", we prefer to send data over the connected UdpSocket.
+    /// otherwise, we will use the main listening socket self.udp and a send_to call.
     fn send_over_udp(&self, peer: &Peer, data: &[u8]) -> io::Result<usize> {
         let endpoint = peer.endpoint();
-        // if peer is "connected", we prefer to send data over the connected UdpSocket.
-        // otherwise, we will use the main listening socket self.udp and a send_to call.
-        match (endpoint.conn.clone(), endpoint.addr) {
+        match (endpoint.conn.as_ref(), endpoint.addr) {
             (Some(conn), _) => conn.send(data),
             (_, Some(ref addr)) => self.udp.send_to(data, addr),
             _ => Ok(0),
