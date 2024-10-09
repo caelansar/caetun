@@ -6,11 +6,11 @@ use std::sync::Arc;
 use tun_tap::Iface;
 
 use crate::allowed_ip::AllowedIps;
-use crate::packet::{Packet, PacketData};
+use crate::packet::Packet;
 use crate::peer::{Action, Peer, PeerName};
 use crate::poll::{Poll, SockID, Token};
 use socket2::{Domain, Protocol, Socket, Type};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 const BUF_SIZE: usize = 1504;
 
@@ -153,13 +153,14 @@ impl Device {
 
         let mut buf = [0u8; BUF_SIZE];
         for (_, peer) in self.peers_by_name.iter() {
-            self.take_action(peer, peer.initiate_handshake(self.name.as_ref(), &mut buf))
+            self.take_action(peer.initiate_handshake(self.name.as_ref(), &mut buf))
         }
 
         Ok(())
     }
 
     // Handle incoming data from tun interface
+    #[instrument(name = "handle_tun", skip_all)]
     pub fn handle_tun(&self, buf: &mut [u8]) -> io::Result<()> {
         while let Ok(n) = self.iface.recv(buf) {
             let (_, dst) = match etherparse::Ipv4HeaderSlice::from_slice(&buf[..n]) {
@@ -167,13 +168,13 @@ impl Device {
                     let src = h.source_addr();
                     let dst = h.destination_addr();
                     info!(
-                        "got Ipv4 packet of size: {n}, {src} -> {dst}, from {}",
+                        "got Ipv4 packet of size: {n}, {src} -> {dst}, from tunnel: {}",
                         self.iface.name()
                     );
                     (src, dst)
                 }
                 Err(e) => {
-                    error!("not an Ipv4 packet: {:?}", e);
+                    warn!("not an Ipv4 packet: {:?}", e);
                     continue;
                 }
             };
@@ -185,25 +186,19 @@ impl Device {
                 continue;
             };
 
-            let endpoint = peer.endpoint();
-
-            // if peer is "connected", we prefer to send data over the connected UdpSocket.
-            // otherwise, we will use the main listening socket self.udp and a send_to call.
-            let send_bytes = match (&endpoint.conn, endpoint.addr) {
-                (Some(conn), _) => conn.send(&buf[..n])?,
-                (_, Some(addr)) => self.udp.send_to(&buf[..n], addr)?,
-                _ => 0,
-            };
-            debug!("[handle_tun] send {send_bytes} bytes")
+            let mut dst = [0u8; BUF_SIZE];
+            let action = peer.encapsulate(&buf[..n], &mut dst);
+            self.take_action(action);
         }
 
         Ok(())
     }
 
     // Handle incoming data from an unconnected UdpSocket
+    #[instrument(name = "handle_udp", skip_all)]
     pub fn handle_udp(&self, buf: &mut [u8]) -> io::Result<()> {
         while let Ok((n, addr)) = self.udp.recv_from(buf) {
-            info!("[handle_udp] got packet of size: {n}, from {addr}");
+            info!("got packet of size: {n}, from addr: {addr}");
 
             let SocketAddr::V4(addr) = addr else { continue };
             let Ok(packet) = Packet::parse_from(&buf[..n]) else {
@@ -250,7 +245,7 @@ impl Device {
 
                 let mut buf = [0u8; BUF_SIZE];
                 let action = peer.handle_incoming_packet(packet, &mut buf);
-                self.take_action(peer, action)
+                self.take_action(action)
             }
         }
 
@@ -258,6 +253,7 @@ impl Device {
     }
 
     // Handle incoming data from a connected UdpSocket
+    #[instrument(name = "handle_connected_peer", skip_all, fields(peer_idx = peer.local_idx()))]
     pub fn handle_connected_peer(
         &self,
         socket: &UdpSocket,
@@ -268,20 +264,25 @@ impl Device {
         while let Ok(n) = socket.recv(&mut buf[..]) {
             info!("got packet of size: {n}, from a connected peer");
 
-            let Ok(packet) = Packet::parse_from(&buf[..n]) else {
-                continue;
+            let packet = match Packet::parse_from(&buf[..n]) {
+                Ok(packet) => packet,
+                Err(e) => {
+                    error!("not a valid packet: {:?}", e);
+                    continue;
+                }
             };
 
             let mut buf = [0u8; BUF_SIZE];
             let action = peer.handle_incoming_packet(packet, &mut buf);
-            self.take_action(peer, action);
+            self.take_action(action);
         }
         Ok(())
     }
 
-    fn take_action(&self, peer: &Peer, action: Action<'_>) {
+    #[instrument(name = "take_action", skip_all)]
+    fn take_action(&self, action: Action<'_>) {
         match action {
-            Action::WriteToTun(data, src_addr) => {
+            Action::WriteToTun(peer, data, src_addr) => {
                 // source address filtering for incoming packets: ensures that incoming packets
                 // are from an allowed source before forwarding them to the tun interface.
                 if peer.is_allowed_ip(src_addr) {
@@ -290,7 +291,7 @@ impl Device {
                     info!("write to tun {:?} bytes", n);
                 }
             }
-            Action::WriteToNetwork(data) => {
+            Action::WriteToNetwork(peer, data) => {
                 let _ = self.send_over_udp(peer, data);
             }
             Action::None => (),
@@ -299,6 +300,8 @@ impl Device {
 
     fn send_over_udp(&self, peer: &Peer, data: &[u8]) -> io::Result<usize> {
         let endpoint = peer.endpoint();
+        // if peer is "connected", we prefer to send data over the connected UdpSocket.
+        // otherwise, we will use the main listening socket self.udp and a send_to call.
         match (endpoint.conn.clone(), endpoint.addr) {
             (Some(conn), _) => conn.send(data),
             (_, Some(ref addr)) => self.udp.send_to(data, addr),

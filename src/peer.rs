@@ -16,17 +16,29 @@ pub struct Peer {
     allowed_ips: AllowedIps<()>,
 }
 
+/// Action is a type that represents an action to be taken by the device.
 pub enum Action<'a> {
-    WriteToTun(&'a [u8], Ipv4Addr),
-    WriteToNetwork(&'a [u8]),
+    /// WriteToTun is an action that writes data to the tun interface.
+    WriteToTun(&'a Peer, &'a [u8], Ipv4Addr),
+    /// WriteToNetwork is an action that writes data to the network.
+    WriteToNetwork(&'a Peer, &'a [u8]),
+    /// None is an action that does nothing.
     None,
 }
 
+/// HandshakeState represents the handshake state of a peer.
+///
+/// for client perspective, it will go through None -> HandshakeSent -> Connected.
+/// for server perspective, it will go through None -> HandshakeReceived -> Connected.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum HandshakeState {
+    /// None is the initial handshake state.
     None,
+    /// HandshakeSent is the handshake state when the handshake has been sent.
     HandshakeSent,
+    /// HandshakeReceived is the handshake state when the handshake has been received.
     HandshakeReceived { remote_idx: u32 },
+    /// Connected is the handshake state when the handshake is complete.
     Connected { remote_idx: u32 },
 }
 
@@ -83,6 +95,7 @@ impl PeerName<[u8; PEER_NAME_MAX_LEN]> {
 }
 
 impl Peer {
+    #[allow(dead_code)]
     pub fn new(peer: Endpoint) -> Self {
         Self {
             local_idx: 0,
@@ -91,6 +104,7 @@ impl Peer {
             allowed_ips: AllowedIps::new(),
         }
     }
+
     pub fn endpoint(&self) -> RwLockReadGuard<Endpoint> {
         self.endpoint.read()
     }
@@ -150,7 +164,7 @@ impl Peer {
     }
 
     pub fn initiate_handshake<'a>(
-        &self,
+        &'a self,
         sender_name: PeerName<&[u8]>,
         dst: &'a mut [u8],
     ) -> Action<'a> {
@@ -170,13 +184,13 @@ impl Peer {
             *state = HandshakeState::HandshakeSent;
 
             debug!("sending handshake");
-            Action::WriteToNetwork(&dst[..n])
+            Action::WriteToNetwork(self, &dst[..n])
         } else {
             Action::None
         }
     }
 
-    pub fn encapsulate<'a>(&self, src: &'a [u8], dst: &'a mut [u8]) -> Action<'a> {
+    pub fn encapsulate<'a>(&'a self, src: &'a [u8], dst: &'a mut [u8]) -> Action<'a> {
         let state = self.handshake_state.read();
         if let HandshakeState::Connected { remote_idx } = &*state {
             let data = PacketData {
@@ -184,13 +198,17 @@ impl Peer {
                 data: src,
             };
             let n = data.format(dst);
-            Action::WriteToNetwork(&dst[..n])
+            Action::WriteToNetwork(self, &dst[..n])
         } else {
             Action::None
         }
     }
 
-    pub fn handle_incoming_packet<'a>(&self, packet: Packet<'a>, dst: &'a mut [u8]) -> Action<'a> {
+    pub fn handle_incoming_packet<'a>(
+        &'a self,
+        packet: Packet<'a>,
+        dst: &'a mut [u8],
+    ) -> Action<'a> {
         match packet {
             Packet::Empty => Action::None,
             Packet::HandshakeInit(msg) => self.handle_handshake_init(msg, dst),
@@ -199,7 +217,11 @@ impl Peer {
         }
     }
 
-    fn handle_handshake_init<'a>(&self, msg: HandshakeInit<'a>, dst: &'a mut [u8]) -> Action<'a> {
+    fn handle_handshake_init<'a>(
+        &'a self,
+        msg: HandshakeInit<'a>,
+        dst: &'a mut [u8],
+    ) -> Action<'a> {
         let mut state = self.handshake_state.write();
 
         if let HandshakeState::None | HandshakeState::Connected { .. } = &*state {
@@ -215,20 +237,20 @@ impl Peer {
                 sender_idx: msg.assigned_idx,
             };
             let n = response.format(dst);
-            Action::WriteToNetwork(&dst[..n])
+            Action::WriteToNetwork(self, &dst[..n])
         } else {
             Action::None
         }
     }
 
     fn handle_handshake_response<'a>(
-        &self,
+        &'a self,
         msg: HandshakeResponse,
         dst: &'a mut [u8],
     ) -> Action<'a> {
         let mut state = self.handshake_state.write();
         if let HandshakeState::HandshakeSent = &*state {
-            debug!("received handshake response");
+            debug!("received handshake response, transitioning to Connected state");
 
             *state = HandshakeState::Connected {
                 remote_idx: msg.assigned_idx,
@@ -241,14 +263,16 @@ impl Peer {
         }
     }
 
-    fn handle_packet_data<'a>(&self, msg: PacketData<'a>, _dst: &'a mut [u8]) -> Action<'a> {
+    fn handle_packet_data<'a>(&'a self, msg: PacketData<'a>, _dst: &'a mut [u8]) -> Action<'a> {
         let state = self.handshake_state.read();
+        info!("handling packet data, peer handshake state: {:?}", state);
+
         match &*state {
             HandshakeState::Connected { .. } => {
                 debug!("peer is connected");
             }
             HandshakeState::HandshakeReceived { remote_idx } => {
-                debug!("received a first data packet, transitioning to Connected");
+                debug!("received a first data packet, transitioning to Connected state");
                 let remote_idx = *remote_idx;
                 drop(state);
 
@@ -260,7 +284,7 @@ impl Peer {
         match etherparse::Ipv4HeaderSlice::from_slice(msg.data) {
             Ok(iph) => {
                 let src = iph.source_addr();
-                Action::WriteToTun(msg.data, src)
+                Action::WriteToTun(self, msg.data, src)
             }
             _ => Action::None,
         }

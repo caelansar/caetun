@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::fmt::{Debug, Formatter};
 use std::net::IpAddr;
 
 use ip_network::IpNetwork;
@@ -11,6 +10,7 @@ pub struct AllowedIps<D> {
     ips: IpNetworkTable<D>,
 }
 
+#[allow(dead_code)]
 impl<D> AllowedIps<D> {
     pub fn new() -> Self {
         Self {
