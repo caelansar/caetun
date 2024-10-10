@@ -128,7 +128,7 @@ impl Device {
                         continue;
                     };
                     if let Some(conn) = peer.endpoint().conn.as_deref() {
-                        if let Err(err) = self.handle_connected_peer(conn, peer, &mut buf) {
+                        if let Err(err) = self.handle_connected_udp(conn, peer, &mut buf) {
                             error!("udp error: {:?}", err);
                         }
                     }
@@ -192,72 +192,56 @@ impl Device {
     // Handle incoming data from an unconnected UdpSocket
     #[instrument(name = "handle_udp", skip_all)]
     pub fn handle_udp(&self, buf: &mut [u8]) -> io::Result<()> {
-        while let Ok((n, addr)) = self.udp.recv_from(buf) {
-            info!("got packet of size: {n}, from addr: {addr}");
-
-            let SocketAddr::V4(addr) = addr else { continue };
-            let Ok(packet) = Packet::parse_from(&buf[..n]) else {
-                continue;
-            };
-
-            let peer = match packet {
-                Packet::Empty => continue,
-                Packet::HandshakeInit(ref msg) => {
-                    self.peers_by_name.get(msg.sender_name.as_slice())
-                }
-                Packet::HandshakeResponse(ref msg) => {
-                    self.peers_by_idx.get(msg.sender_idx as usize)
-                }
-                Packet::Data(ref msg) => self.peers_by_idx.get(msg.sender_idx as usize),
-            };
-
-            if let Some(peer) = peer {
-                // handle our handshake packet
-
-                let (endpoint_changed, conn) = peer.set_endpoint(addr);
-                if let Some(conn) = conn {
-                    self.poll.delete(conn.as_ref()).expect("poll delete");
-                    // drop(conn);
-                }
-
-                if endpoint_changed && self.use_connected_peer {
-                    // once a client peer handshakes to the server, we shall open a new UdpSocket
-                    // and connect it to the client’s public ip address and port.
-                    match peer.connect_endpoint(self.listen_port) {
-                        Ok(conn) => {
-                            self.poll
-                                .register_read(
-                                    Token::Sock(SockID::Connected(peer.local_idx())),
-                                    &*conn,
-                                )
-                                .expect("poll register_read");
-                        }
-                        Err(err) => {
-                            error!("error connecting to peer: {:?}", err);
-                        }
-                    }
-                }
-
-                let mut buf = [0u8; BUF_SIZE];
-                let action = peer.handle_incoming_packet(packet, &mut buf);
-                self.take_action(action)
-            }
-        }
-
-        Ok(())
+        self.handle_udp_generic(
+            self.udp.as_ref(),
+            buf,
+            |packet| match packet {
+                Packet::HandshakeInit(ref msg) => self
+                    .peers_by_name
+                    .get(msg.sender_name.as_slice())
+                    .map(|p| p.as_ref()),
+                Packet::HandshakeResponse(ref msg) => self
+                    .peers_by_idx
+                    .get(msg.sender_idx as usize)
+                    .map(|p| p.as_ref()),
+                Packet::Data(ref msg) => self
+                    .peers_by_idx
+                    .get(msg.sender_idx as usize)
+                    .map(|p| p.as_ref()),
+                Packet::Empty => None,
+            },
+            false,
+        )
     }
 
     // Handle incoming data from a connected UdpSocket
-    #[instrument(name = "handle_connected_peer", skip_all, fields(peer_idx = peer.local_idx()))]
-    pub fn handle_connected_peer(
+    #[instrument(name = "handle_connected_udp", skip_all, fields(peer_idx = peer.local_idx()))]
+    pub fn handle_connected_udp(
         &self,
         socket: &UdpSocket,
-        peer: &Peer,
+        peer: &Arc<Peer>,
         buf: &mut [u8],
     ) -> io::Result<()> {
-        // since this socket is "connected", so we can recv from it directly
-        while let Ok(n) = socket.recv(&mut buf[..]) {
-            info!("got packet of size: {n}, from a connected peer");
+        self.handle_udp_generic(socket, buf, |_| Some(peer), true)
+    }
+
+    fn handle_udp_generic<'b, F>(
+        &self,
+        socket: &UdpSocket,
+        buf: &mut [u8],
+        get_peer: F,
+        connected: bool,
+    ) -> io::Result<()>
+    where
+        F: for<'a> Fn(&'a Packet) -> Option<&'b Peer>,
+    {
+        while let Ok((n, addr)) = socket.recv_from(buf) {
+            let SocketAddr::V4(addr) = addr else {
+                warn!("not an ipv4 addr: {addr}");
+                continue;
+            };
+
+            info!("got packet of size: {n}, from addr: {addr}, connected: {connected}");
 
             let packet = match Packet::parse_from(&buf[..n]) {
                 Ok(packet) => packet,
@@ -267,11 +251,40 @@ impl Device {
                 }
             };
 
-            let mut buf = [0u8; BUF_SIZE];
-            let action = peer.handle_incoming_packet(packet, &mut buf);
-            self.take_action(action);
+            if let Some(peer) = get_peer(&packet) {
+                if !connected {
+                    let (endpoint_changed, conn) = peer.set_endpoint(addr);
+                    if let Some(conn) = conn {
+                        self.poll.delete(conn.as_ref()).expect("poll delete");
+                    }
+
+                    if endpoint_changed && self.use_connected_peer {
+                        if let Err(err) = self.connect_peer(peer) {
+                            error!("error connecting to peer: {:?}", err);
+                        }
+                    }
+                }
+
+                let mut response_buf = [0u8; BUF_SIZE];
+                let action = peer.handle_incoming_packet(packet, &mut response_buf);
+                self.take_action(action);
+            }
         }
+
         Ok(())
+    }
+
+    // Helper method to connect to a peer
+    fn connect_peer(&self, peer: &Peer) -> io::Result<()> {
+        match peer.connect_endpoint(self.listen_port) {
+            Ok(conn) => {
+                self.poll
+                    .register_read(Token::Sock(SockID::Connected(peer.local_idx())), &*conn)
+                    .expect("poll register_read");
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
     }
 
     #[instrument(name = "take_action", skip_all)]
