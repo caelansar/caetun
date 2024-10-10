@@ -1,5 +1,16 @@
 use crate::peer::PeerName;
+use thiserror::Error;
 
+/// Packet is the type of the packets that are sent between peers.
+///
+/// specification:
+/// the first byte is the type of the packet.
+/// the following bytes are the payload of the packet.
+/// for `HandshakeInit`, the payload is the assigned index and the sender's name.
+/// for `HandshakeResponse`, the payload is the assigned index and the sender's index.
+/// for `Data`, the payload is the sender's index and the data.
+///
+/// all bytes are sent in little-endian order.
 #[derive(Debug, PartialEq)]
 pub enum Packet<'a> {
     HandshakeInit(HandshakeInit<'a>),
@@ -26,16 +37,35 @@ pub struct PacketData<'a> {
     pub data: &'a [u8],
 }
 
-const HANDSHAKE_INIT: u8 = 1;
-const HANDSHAKE_RESPONSE: u8 = 2;
-const PACKET_DATA: u8 = 3;
+#[repr(u8)]
+enum PacketType {
+    HandshakeInit = 1,
+    HandshakeResponse = 2,
+    PacketData = 3,
+}
+
+impl TryFrom<u8> for PacketType {
+    type Error = PackeParseError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(PacketType::HandshakeInit),
+            2 => Ok(PacketType::HandshakeResponse),
+            3 => Ok(PacketType::PacketData),
+            _ => Err(PackeParseError::InvalidPacketType(value)),
+        }
+    }
+}
 
 const HANDSHAKE_INIT_SIZE: usize = PeerName::max_len() + 5;
 const HANDSHAKE_RESPONSE_SIZE: usize = 9;
 const DATA_MIN_SIZE: usize = 5;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Error, Debug, Copy, Clone)]
 pub enum PackeParseError {
+    #[error("invalid packet type {0}")]
+    InvalidPacketType(u8),
+    #[error("protocol error")]
     ProtocolErr,
 }
 
@@ -44,8 +74,8 @@ impl<'a> Packet<'a> {
         if src.is_empty() {
             return Ok(Packet::Empty);
         }
-        match (src[0], src.len()) {
-            (HANDSHAKE_INIT, HANDSHAKE_INIT_SIZE) => {
+        match (PacketType::try_from(src[0])?, src.len()) {
+            (PacketType::HandshakeInit, HANDSHAKE_INIT_SIZE) => {
                 let remote_idx = u32::from_le_bytes(src[1..5].try_into().unwrap());
                 let sender_name = PeerName::from(&src[5..105]);
                 Ok(Packet::HandshakeInit(HandshakeInit {
@@ -53,7 +83,7 @@ impl<'a> Packet<'a> {
                     assigned_idx: remote_idx,
                 }))
             }
-            (HANDSHAKE_RESPONSE, HANDSHAKE_RESPONSE_SIZE) => {
+            (PacketType::HandshakeResponse, HANDSHAKE_RESPONSE_SIZE) => {
                 let assigned_idx = u32::from_le_bytes(src[1..5].try_into().unwrap());
                 let sender_idx = u32::from_le_bytes(src[5..9].try_into().unwrap());
 
@@ -62,7 +92,7 @@ impl<'a> Packet<'a> {
                     sender_idx,
                 }))
             }
-            (PACKET_DATA, n) if n >= DATA_MIN_SIZE => {
+            (PacketType::PacketData, n) if n >= DATA_MIN_SIZE => {
                 let sender_idx = u32::from_le_bytes(src[1..5].try_into().unwrap());
 
                 Ok(Packet::Data(PacketData {
@@ -79,7 +109,7 @@ impl<'a> HandshakeInit<'a> {
     pub fn format(&self, dst: &mut [u8]) -> usize {
         assert!(dst.len() >= HANDSHAKE_INIT_SIZE);
 
-        dst[0] = HANDSHAKE_INIT;
+        dst[0] = PacketType::HandshakeInit as u8;
         dst[1..5].copy_from_slice(&self.assigned_idx.to_le_bytes());
         dst[5..105].copy_from_slice(self.sender_name.as_slice());
 
@@ -91,7 +121,7 @@ impl HandshakeResponse {
     pub fn format(&self, dst: &mut [u8]) -> usize {
         assert!(dst.len() >= HANDSHAKE_RESPONSE_SIZE);
 
-        dst[0] = HANDSHAKE_RESPONSE;
+        dst[0] = PacketType::HandshakeResponse as u8;
         dst[1..5].copy_from_slice(&self.assigned_idx.to_le_bytes());
         dst[5..9].copy_from_slice(&self.sender_idx.to_le_bytes());
 
@@ -105,7 +135,7 @@ impl<'a> PacketData<'a> {
         let len = n + 5;
         assert!(dst.len() >= len);
 
-        dst[0] = PACKET_DATA;
+        dst[0] = PacketType::PacketData as u8;
         dst[1..5].copy_from_slice(&self.sender_idx.to_le_bytes());
         dst[5..(5 + n)].copy_from_slice(self.data);
 

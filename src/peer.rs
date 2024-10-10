@@ -1,19 +1,29 @@
 use crate::allowed_ip::AllowedIps;
-use crate::device::{new_udp_socket, Endpoint};
+use crate::device::new_udp_socket;
 use crate::packet::{HandshakeInit, HandshakeResponse, Packet, PacketData};
 use anyhow::bail;
 use parking_lot::{RwLock, RwLockReadGuard};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 
+/// Peer is responsible for the state machine and identity management for a peer.
+/// The handshake state machine requires asymmetric roles between two peers, if both peers act like clients
+/// and initialize by sending handshakes, the situation deadlocks and neither party can make any progress.
 #[derive(Default)]
 pub struct Peer {
     local_idx: u32,
     handshake_state: RwLock<HandshakeState>,
     endpoint: RwLock<Endpoint>,
     allowed_ips: AllowedIps<()>,
+}
+
+/// Endpoint is a struct that represents a peer's endpoint.
+#[derive(Default, Debug)]
+pub struct Endpoint {
+    pub addr: Option<SocketAddrV4>,
+    pub conn: Option<Arc<UdpSocket>>,
 }
 
 /// Action is a type that represents an action to be taken by the device.
@@ -131,7 +141,10 @@ impl Peer {
 
     // updates the peer endpoint address, and returns if it had a different address
     // and a previous connected UdpSocket
+    #[instrument(name = "set_endpoint", skip_all, ret)]
     pub fn set_endpoint(&self, addr: SocketAddrV4) -> (bool, Option<Arc<UdpSocket>>) {
+        debug!("setting endpoint to {}", addr);
+
         let endpoint = self.endpoint.read();
 
         if endpoint.addr.is_some_and(|a| a == addr) {
@@ -163,6 +176,7 @@ impl Peer {
         Ok(conn)
     }
 
+    /// initiate_handshake initiates a handshake with the peer.
     pub fn initiate_handshake<'a>(
         &'a self,
         sender_name: PeerName<&[u8]>,
@@ -190,6 +204,8 @@ impl Peer {
         }
     }
 
+    /// encapsulate encapsulates the src data into a packet and writes it to the network
+    /// if the handshake is complete.
     pub fn encapsulate<'a>(&'a self, src: &'a [u8], dst: &'a mut [u8]) -> Action<'a> {
         let state = self.handshake_state.read();
         if let HandshakeState::Connected { remote_idx } = &*state {

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io;
-use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
+use std::net::{SocketAddr, UdpSocket};
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::sync::Arc;
 use tun_tap::Iface;
@@ -14,6 +14,7 @@ use tracing::{debug, error, info, instrument, warn};
 
 const BUF_SIZE: usize = 1504;
 
+/// Device is responsible for driving the main event loop and peer lookup logic.
 pub struct Device {
     name: PeerName,
     udp: Arc<UdpSocket>,
@@ -24,12 +25,6 @@ pub struct Device {
     poll: Poll,
     use_connected_peer: bool,
     listen_port: u16,
-}
-
-#[derive(Default, Debug)]
-pub struct Endpoint {
-    pub addr: Option<SocketAddrV4>,
-    pub conn: Option<Arc<UdpSocket>>,
 }
 
 pub struct DeviceConfig<'a> {

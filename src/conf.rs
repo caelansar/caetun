@@ -44,7 +44,6 @@ pub struct PeerConf {
     pub allowed_ips: Vec<(Ipv4Addr, u8)>,
 }
 
-#[allow(dead_code)]
 impl Conf {
     pub const DEFAULT_LISTEN_PORT: u16 = 19988;
 
