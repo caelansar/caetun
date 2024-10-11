@@ -55,6 +55,8 @@ pub fn new_udp_socket(port: u16) -> io::Result<UdpSocket> {
 
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
+    // SO_REUSEADDR is a socket option that influences how the underlying operating system manages socket bindings,
+    // particularly regarding address and port reuse.
     socket.set_reuse_address(true)?;
     socket.set_nonblocking(true)?;
 
@@ -195,20 +197,19 @@ impl Device {
         self.handle_udp_generic(
             self.udp.as_ref(),
             buf,
-            |packet| match packet {
-                Packet::HandshakeInit(ref msg) => self
-                    .peers_by_name
-                    .get(msg.sender_name.as_slice())
-                    .map(|p| p.as_ref()),
-                Packet::HandshakeResponse(ref msg) => self
-                    .peers_by_idx
-                    .get(msg.sender_idx as usize)
-                    .map(|p| p.as_ref()),
-                Packet::Data(ref msg) => self
-                    .peers_by_idx
-                    .get(msg.sender_idx as usize)
-                    .map(|p| p.as_ref()),
-                Packet::Empty => None,
+            |packet| {
+                match packet {
+                    Packet::HandshakeInit(ref msg) => {
+                        self.peers_by_name.get(msg.sender_name.as_slice())
+                    }
+                    Packet::HandshakeResponse(ref msg) => {
+                        self.peers_by_idx.get(msg.sender_idx as usize)
+                    }
+                    Packet::Data(ref msg) => self.peers_by_idx.get(msg.sender_idx as usize),
+
+                    Packet::Empty => None,
+                }
+                .map(|p| p.as_ref())
             },
             false,
         )
@@ -287,6 +288,7 @@ impl Device {
         }
     }
 
+    /// take an action
     #[instrument(name = "take_action", skip_all)]
     fn take_action(&self, action: Action<'_>) {
         match action {
@@ -306,7 +308,7 @@ impl Device {
         }
     }
 
-    /// send data over udp
+    /// send data to a peer over udp
     ///
     /// if peer is "connected", we prefer to send data over the connected UdpSocket.
     /// otherwise, we will use the main listening socket self.udp and a send_to call.

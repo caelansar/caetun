@@ -13,6 +13,11 @@ use tracing::{debug, info, instrument};
 /// and initialize by sending handshakes, the situation deadlocks and neither party can make any progress.
 #[derive(Default)]
 pub struct Peer {
+    /// The local index of the peer.
+    ///
+    /// On wireguard, it obfuscates the indices used in its packets by randomizing them into a 24 bit address space,
+    /// hiding the total number of peers using the system. Since security is absolutely not a concern in this project,
+    /// we keep it simple and do not attempt to obfuscate the indices.
     local_idx: u32,
     handshake_state: RwLock<HandshakeState>,
     endpoint: RwLock<Endpoint>,
@@ -60,6 +65,8 @@ impl Default for HandshakeState {
 
 const PEER_NAME_MAX_LEN: usize = 100;
 
+/// PeerName is used to identify a peer.
+/// Wireguard identifies peers by their PublicKeys, but we simply use string names here.
 #[derive(Debug, PartialEq, Hash, Eq)]
 pub struct PeerName<T = [u8; PEER_NAME_MAX_LEN]>(T);
 

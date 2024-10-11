@@ -4,7 +4,16 @@ use std::net::IpAddr;
 use ip_network::IpNetwork;
 use ip_network_table::IpNetworkTable;
 
-/// A trie of IP/cidr addresses
+/// AllowedIps is a trie of IP/cidr addresses.
+///
+/// The routing logic involves checking the packet’s destination address (dst) against the AllowedIPs of each Peer.
+/// For outgoing packets, the packet is sent to the Peer whose AllowedIPs range includes dst. In cases where multiple
+/// peers match, the one with the longest prefix match is selected.
+///
+/// On the contrary, for incoming UDP datagrams, after decapsulation, we obtain an IP packet with a known source address (src).
+/// Given the connected Peer from which this packet originates, we check if src falls within that peer’s AllowedIPs.
+/// If it does, the packet is forwarded to the tun interface; otherwise, it’s dropped. This step ensures that only
+/// packets from valid sources are processed and forwarded.
 #[derive(Default)]
 pub struct AllowedIps<D> {
     ips: IpNetworkTable<D>,
