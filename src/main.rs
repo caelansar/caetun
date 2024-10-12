@@ -1,20 +1,13 @@
-use crate::conf::Conf;
-use crate::device::{Device, DeviceConfig};
-use crate::peer::{Peer, PeerName};
 use anyhow::{bail, Context};
+use caetun::conf::Conf;
+use caetun::device::{Device, DeviceConfig};
+use caetun::peer::{Peer, PeerName};
 use clap::Parser;
 use std::fs;
 use std::path::PathBuf;
 use tracing::level_filters::LevelFilter;
 use tracing::Level;
 use tracing_subscriber::{fmt::Layer, layer::SubscriberExt, util::SubscriberInitExt, Layer as _};
-
-mod allowed_ip;
-mod conf;
-mod device;
-mod packet;
-mod peer;
-mod poll;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]

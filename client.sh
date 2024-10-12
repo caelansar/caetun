@@ -1,18 +1,24 @@
 #!/bin/bash
+CONF=$1
+
 
 sudo setcap cap_net_admin=eip /usr/local/bin/caetun
 
+cp $CONF tun0.conf
+
+IP=$(caetun-conf --conf tun0.conf | jq -r '"\(.interface.address[0])/\(.interface.address[1])"')
+
 # the client script tells caetun exactly where to find its
 # server peer, in this case at 198.19.249.106:19988
-sudo /usr/local/bin/caetun --conf client.conf &
+sudo /usr/local/bin/caetun --conf tun0.conf &
 
-usleep 100000
+sleep 1
 
 pid=$!
 
-sudo ip addr add 10.8.0.2/24 dev client
-sudo ip link set up dev client
-sudo ip link set dev client mtu 1400
+sudo ip addr add $IP dev tun0
+sudo ip link set up dev tun0
+sudo ip link set dev tun0 mtu 1400
 
 trap "kill $pid" INT TERM
 

@@ -5,6 +5,14 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[bin]]
+name = "caetun"
+path = "src/main.rs"
+
+[[bin]]
+name = "caetun-conf"
+path = "src/caetun-conf.rs"
+
 [dependencies]
 etherparse = "0.15.0"
 clap = { version = "^4.4.8", features = ["derive"] }
@@ -20,3 +28,4 @@ serde_ini = { git = "https://github.com/arcnmx/serde-ini.git", rev = "eb9d637" }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 anyhow = "1.0.89"
+serde_json = "1.0.128"

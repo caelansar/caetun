@@ -4,7 +4,7 @@ sudo setcap cap_net_admin=eip /home/caelansar/.cargo/bin/caetun
 
 sudo /home/caelansar/.cargo/bin/caetun --conf server.conf &
 
-usleep 100000
+sleep 1
 
 pid=$!
 
