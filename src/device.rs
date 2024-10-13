@@ -1,9 +1,9 @@
+use crate::tun::TunSocket;
 use std::collections::HashMap;
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::sync::Arc;
-use tun_tap::Iface;
 
 use crate::allowed_ip::AllowedIps;
 use crate::packet::Packet;
@@ -18,7 +18,7 @@ const BUF_SIZE: usize = 1504;
 pub struct Device {
     name: PeerName,
     udp: Arc<UdpSocket>,
-    iface: Iface,
+    iface: TunSocket,
     peers_by_name: HashMap<PeerName, Arc<Peer>>,
     peers_by_idx: Vec<Arc<Peer>>,
     peers_by_ip: AllowedIps<Arc<Peer>>,
@@ -66,9 +66,8 @@ pub fn new_udp_socket(port: u16) -> io::Result<UdpSocket> {
 }
 
 impl Device {
-    pub fn new(config: DeviceConfig) -> io::Result<Self> {
-        let iface = tun_tap::Iface::without_packet_info(config.tun_name, tun_tap::Mode::Tun)?;
-        iface.set_non_blocking()?;
+    pub fn new(config: DeviceConfig) -> anyhow::Result<Self> {
+        let iface = TunSocket::new(config.tun_name)?.set_non_blocking()?;
 
         let poll = Poll::new()?;
 
@@ -159,14 +158,15 @@ impl Device {
     // Handle incoming data from tun interface
     #[instrument(name = "handle_tun", skip_all)]
     pub fn handle_tun(&self, buf: &mut [u8]) -> io::Result<()> {
-        while let Ok(n) = self.iface.recv(buf) {
-            let (_, dst) = match etherparse::Ipv4HeaderSlice::from_slice(&buf[..n]) {
+        while let Ok(data) = self.iface.read(buf) {
+            let (_, dst) = match etherparse::Ipv4HeaderSlice::from_slice(data) {
                 Ok(h) => {
                     let src = h.source_addr();
                     let dst = h.destination_addr();
                     info!(
-                        "got Ipv4 packet of size: {n}, {src} -> {dst}, from tunnel: {}",
-                        self.iface.name()
+                        "got Ipv4 packet of size: {}, {src} -> {dst}, from tunnel: {}",
+                        data.len(),
+                        self.iface.name().unwrap()
                     );
                     (src, dst)
                 }
@@ -184,7 +184,7 @@ impl Device {
             };
 
             let mut dst = [0u8; BUF_SIZE];
-            let action = peer.encapsulate(&buf[..n], &mut dst);
+            let action = peer.encapsulate(data, &mut dst);
             self.take_action(action);
         }
 
@@ -297,7 +297,7 @@ impl Device {
                 // are from an allowed source before forwarding them to the tun interface.
                 if peer.is_allowed_ip(src_addr) {
                     // send packet back to network stack
-                    let n = self.iface.send(data);
+                    let n = self.iface.write4(data);
                     info!("write to tun {:?} bytes", n);
                 }
             }
