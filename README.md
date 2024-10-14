@@ -59,9 +59,9 @@ docker build -t caetun .
 docker network create --subnet=172.18.0.0/16 net
 ```
 
-### Run as server
+### Run server
 ```sh
-docker run -d --cap-add=NET_ADMIN --device=/dev/net/tun --name caetun-server -e MODE=server --network net --ip 172.18.0.22 caetun
+docker run -d --cap-add=NET_ADMIN --cap-add=SYSLOG --sysctl="net.ipv4.ip_forward=1" --privileged --device=/dev/net/tun --name caetun-server -e MODE=server --network net --ip 172.18.0.22 caetun
 ```
 
 ### Run client1

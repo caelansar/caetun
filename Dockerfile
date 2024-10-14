@@ -22,6 +22,7 @@ RUN apk add --no-cache \
     iproute2 \
     jq \
     libcap \
+    iptables \
     bash
 
 # Copy the built binary from the builder stage

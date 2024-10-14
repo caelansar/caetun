@@ -12,6 +12,9 @@ ip addr add 10.8.0.1/24 dev server
 ip link set up dev server
 ip link set dev server mtu 1400
 
-trap "kill $pid $ncpid" INT TERM
+iptables -A INPUT -j NFLOG --nflog-prefix "Input packet: " --nflog-group 1
+iptables -A FORWARD -j NFLOG --nflog-prefix "Packet forwarded: " --nflog-group 1
+
+trap "kill $pid" INT TERM
 
 wait $pid
