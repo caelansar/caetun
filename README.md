@@ -54,22 +54,13 @@ _/ ___\\__  \ _/ __ \   __\  |  \/    \
 docker build -t caetun .
 ```
 
-### Create the network so we can control the IP addresses of containers
+### Start docker compose
 ```sh
-docker network create --subnet=172.18.0.0/16 net
+docker compose up -d
 ```
 
-### Run server
+### Test
 ```sh
-docker run -d --cap-add=NET_ADMIN --cap-add=SYSLOG --sysctl="net.ipv4.ip_forward=1" --privileged --device=/dev/net/tun --name caetun-server -e MODE=server --network net --ip 172.18.0.22 caetun
-```
-
-### Run client1
-```sh
-docker run -d --cap-add=NET_ADMIN --device=/dev/net/tun --name caetun-client1 -e MODE=client --network net caetun /etc/caetun/client1.conf
-```
-
-### Run client2
-```sh
-docker run -d --cap-add=NET_ADMIN --device=/dev/net/tun --name caetun-client2 -e MODE=client --network net caetun /etc/caetun/client2.conf
+docker exec -it caetun-client1 ping 10.8.0.3
+docker exec -it caetun-client2 ping 10.8.0.2
 ```
