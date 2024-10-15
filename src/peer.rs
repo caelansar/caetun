@@ -173,9 +173,13 @@ impl Peer {
 
         assert!(endpoint.conn.is_none());
 
-        let conn = new_udp_socket(port)?;
-        // connect to peer
-        conn.connect(addr)?;
+        let conn = new_udp_socket(Some(addr.into()), port)?;
+
+        info!(
+            message="Connected endpoint",
+            port=port,
+            endpoint=?endpoint.addr.unwrap()
+        );
 
         let conn = Arc::new(conn);
         endpoint.conn = Some(conn.clone());

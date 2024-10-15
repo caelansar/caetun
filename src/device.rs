@@ -50,17 +50,25 @@ impl<'a> DeviceConfig<'a> {
     }
 }
 
-pub fn new_udp_socket(port: u16) -> io::Result<UdpSocket> {
+pub fn new_udp_socket(addr: Option<SocketAddr>, port: u16) -> io::Result<UdpSocket> {
     let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
     // SO_REUSEADDR is a socket option that influences how the underlying operating system manages socket bindings,
     // particularly regarding address and port reuse.
+    //
+    // NOTE: SO_REUSEADDR is not supported on macos
+    // https://stackoverflow.com/questions/14388706/how-do-so-reuseaddr-and-so-reuseport-differ
     socket.set_reuse_address(true)?;
     socket.set_nonblocking(true)?;
 
     socket.bind(&socket_addr.into())?;
+
+    // connect to addr if it's set
+    if let Some(addr) = addr {
+        socket.connect(&addr.into())?;
+    }
 
     Ok(socket.into())
 }
@@ -71,7 +79,7 @@ impl Device {
 
         let poll = Poll::new()?;
 
-        let udp = Arc::new(new_udp_socket(config.listen_port)?);
+        let udp = Arc::new(new_udp_socket(None, config.listen_port)?);
 
         Ok(Self {
             name: config.name,
