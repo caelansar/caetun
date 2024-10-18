@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(non_camel_case_types)]
+
 use libc::*;
 use std::io;
 use std::mem::size_of;
