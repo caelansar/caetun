@@ -23,6 +23,8 @@ services:
   caetun-client1:
     image: caetun
     container_name: caetun-client1
+    depends_on:
+      - caetun-server
     cap_add:
       - NET_ADMIN
     devices:
@@ -38,6 +40,8 @@ services:
   caetun-client2:
     image: caetun
     container_name: caetun-client2
+    depends_on:
+      - caetun-server
     cap_add:
       - NET_ADMIN
     devices:
